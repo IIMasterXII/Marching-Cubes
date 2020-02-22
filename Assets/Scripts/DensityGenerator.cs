@@ -20,6 +20,8 @@ public class DensityGenerator : MonoBehaviour
 
     public Vector4 shaderParams;
 
+    Noise noise = new Noise();
+
     void OnValidate() {
         if (FindObjectOfType<MeshGenerator>()) {
             FindObjectOfType<MeshGenerator>().RequestMeshUpdate();
@@ -48,7 +50,7 @@ public class DensityGenerator : MonoBehaviour
                 for(int x = 0; x < pointsPerAxis; x++)
                 {
                     int index = indexFromCoord(x,y,z, pointsPerAxis);
-                    points[index] = Noise.Density(new Vector3(x,y,z), center, offset, spacing, worldBounds, boundsSize, offsets, numOctaves, lacunarity, persistence, noiseScale, noiseWeight, floorOffset, weightMultiplier, closeEdges, hardFloorHeight, hardFloorWeight, shaderParams);
+                    points[index] = noise.Density(new Vector3(x,y,z), center, offset, spacing, worldBounds, boundsSize, offsets, numOctaves, lacunarity, persistence, noiseScale, noiseWeight, floorOffset, weightMultiplier, closeEdges, hardFloorHeight, hardFloorWeight, shaderParams);
                 }
             }
         }

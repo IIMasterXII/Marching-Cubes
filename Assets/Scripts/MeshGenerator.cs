@@ -2,14 +2,23 @@
 using System.Collections.Generic;
 using UnityEngine;
 
+[ExecuteInEditMode]
 public class MeshGenerator : MonoBehaviour
 {
+    const int threadGroupSize = 8;
+
     [Header ("General Settings")]
     // public Renderer textureRender;
     // public MeshFilter meshFilter;
     // public MeshRenderer meshRenderer;
     public DensityGenerator densityGenerator;
+    public bool fixedMapSize;
+    [ConditionalHide (nameof (fixedMapSize), true)]
     public Vector3Int numChunks = Vector3Int.one;
+    [ConditionalHide (nameof (fixedMapSize), false)]
+    public Transform viewer;
+    [ConditionalHide (nameof (fixedMapSize), false)]
+    public float viewDistance = 30;
     public bool autoUpdateInGame = true;
     public bool autoUpdateInEditor = true;
     public Material mat;
@@ -33,11 +42,29 @@ public class MeshGenerator : MonoBehaviour
     Dictionary<Vector3Int, Chunk> existingChunks;
     Queue<Chunk> recycleableChunks;
 
-    float[,,] noiseMap;
     bool settingsUpdated;
 
+    void Awake() {
+        if (Application.isPlaying && !fixedMapSize) {
+            InitVariableChunkStructures ();
+            
+            var oldChunks = FindObjectsOfType<Chunk> ();
+            for (int i = oldChunks.Length - 1; i >= 0; i--) {
+                Destroy (oldChunks[i].gameObject);
+            }
+        }
+    }
+
     void Update () {
-        RequestMeshUpdate ();
+         // Update endless terrain
+        if ((Application.isPlaying && !fixedMapSize)) {
+            Generate ();
+        }
+
+        if (settingsUpdated) {
+            RequestMeshUpdate ();
+            settingsUpdated = false;
+        }
     }
 
     public void RequestMeshUpdate () {
@@ -47,8 +74,93 @@ public class MeshGenerator : MonoBehaviour
     }
 
     public void Generate(){
-        InitChunks ();
-        UpdateAllChunks ();
+        if (fixedMapSize) {
+            InitChunks ();
+            UpdateAllChunks ();
+
+        } else {
+            if (Application.isPlaying) {
+                InitVisibleChunks ();
+            }
+        }
+    }
+
+    void InitVariableChunkStructures () {
+        recycleableChunks = new Queue<Chunk> ();
+        chunks = new List<Chunk> ();
+        existingChunks = new Dictionary<Vector3Int, Chunk> ();
+    }
+
+    void InitVisibleChunks () {
+        if (chunks==null) {
+            return;
+        }
+        CreateChunkHolder ();
+
+        Vector3 p = viewer.position;
+        Vector3 ps = p / boundsSize;
+        Vector3Int viewerCoord = new Vector3Int (Mathf.RoundToInt (ps.x), Mathf.RoundToInt (ps.y), Mathf.RoundToInt (ps.z));
+
+        int maxChunksInView = Mathf.CeilToInt (viewDistance / boundsSize);
+        float sqrViewDistance = viewDistance * viewDistance;
+
+        // Go through all existing chunks and flag for recyling if outside of max view dst
+        for (int i = chunks.Count - 1; i >= 0; i--) {
+            Chunk chunk = chunks[i];
+            Vector3 centre = CenterFromCoord (chunk.coord);
+            Vector3 viewerOffset = p - centre;
+            Vector3 o = new Vector3 (Mathf.Abs (viewerOffset.x), Mathf.Abs (viewerOffset.y), Mathf.Abs (viewerOffset.z)) - Vector3.one * boundsSize / 2;
+            float sqrDst = new Vector3 (Mathf.Max (o.x, 0), Mathf.Max (o.y, 0), Mathf.Max (o.z, 0)).sqrMagnitude;
+            if (sqrDst > sqrViewDistance) {
+                existingChunks.Remove (chunk.coord);
+                recycleableChunks.Enqueue (chunk);
+                chunks.RemoveAt (i);
+            }
+        }
+
+        for (int x = -maxChunksInView; x <= maxChunksInView; x++) {
+            for (int y = -maxChunksInView; y <= maxChunksInView; y++) {
+                for (int z = -maxChunksInView; z <= maxChunksInView; z++) {
+                    Vector3Int coord = new Vector3Int (x, y, z) + viewerCoord;
+                    if (existingChunks.ContainsKey (coord)) {
+                        continue;
+                    }
+
+                    Vector3 centre = CenterFromCoord (coord);
+                    Vector3 viewerOffset = p - centre;
+                    Vector3 o = new Vector3 (Mathf.Abs (viewerOffset.x), Mathf.Abs (viewerOffset.y), Mathf.Abs (viewerOffset.z)) - Vector3.one * boundsSize / 2;
+                    float sqrDst = new Vector3 (Mathf.Max (o.x, 0), Mathf.Max (o.y, 0), Mathf.Max (o.z, 0)).sqrMagnitude;
+
+                    // Chunk is within view distance and should be created (if it doesn't already exist)
+                    if (sqrDst <= sqrViewDistance) {
+
+                        Bounds bounds = new Bounds (CenterFromCoord (coord), Vector3.one * boundsSize);
+                        if (IsVisibleFrom (bounds, Camera.main)) {
+                            if (recycleableChunks.Count > 0) {
+                                Chunk chunk = recycleableChunks.Dequeue ();
+                                chunk.coord = coord;
+                                existingChunks.Add (coord, chunk);
+                                chunks.Add (chunk);
+                                UpdateChunkMesh (chunk);
+                            } else {
+                                Chunk chunk = CreateChunk (coord);
+                                chunk.coord = coord;
+                                chunk.SetUp (mat, generateColliders);
+                                existingChunks.Add (coord, chunk);
+                                chunks.Add (chunk);
+                                UpdateChunkMesh (chunk);
+                            }
+                        }
+                    }
+
+                }
+            }
+        }
+    }
+
+    public bool IsVisibleFrom (Bounds bounds, Camera camera) {
+        Plane[] planes = GeometryUtility.CalculateFrustumPlanes (camera);
+        return GeometryUtility.TestPlanesAABB (planes, bounds);
     }
 
     public void UpdateChunkMesh (Chunk chunk) {
@@ -140,6 +252,10 @@ public class MeshGenerator : MonoBehaviour
                 chunkHolder = new GameObject (chunkHolderName);
             }
         }
+    }
+
+    void OnValidate() {
+        settingsUpdated = true;
     }
 
     public void UpdateAllChunks () {
